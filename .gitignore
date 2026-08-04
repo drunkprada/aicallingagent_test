@@ -1,0 +1,16 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+data/app.db
+data/exports/*.xlsx
+data/incoming_resumes/*
+!data/incoming_resumes/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+!data/processed/failed/.gitkeep
+
+logs/*.log
+!logs/.gitkeep

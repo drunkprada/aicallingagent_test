@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rm -rf data/app.db data/exports/candidates.xlsx data/processed/alex_rivera.docx logs/app.log)",
+      "Bash(./.venv/Scripts/python.exe -c ' *)",
+      "Bash(EXTRACTION_MODE=mock ./.venv/Scripts/python.exe -m src.main ingest)"
+    ]
+  }
+}
