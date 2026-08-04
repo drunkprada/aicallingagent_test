@@ -26,6 +26,13 @@ EXTRACTION_MODE = os.getenv("EXTRACTION_MODE", "openai").strip().lower()
 
 SUPPORTED_RESUME_EXTENSIONS = {".pdf", ".docx"}
 
+# Phase 2 (outbound calling) -- text-to-speech. "Rachel", one of ElevenLabs'
+# built-in premade voices; override with ELEVENLABS_VOICE_ID once a specific
+# voice is chosen for the agent.
+ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
+ELEVENLABS_MODEL = os.getenv("ELEVENLABS_MODEL", "eleven_multilingual_v2")
+AUDIO_OUTPUT_FORMAT = "mp3_44100_128"
+
 
 def ensure_directories() -> None:
     for directory in (

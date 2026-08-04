@@ -1,7 +1,7 @@
 # AI Resume Screening & Calling Agent
 
 Phase 1: resume ingestion, OpenAI-based structured extraction, SQLite storage, and an Excel export for HR.
-Phase 2 (outbound AI calling) is scaffolded in `src/calling/` but not implemented yet — see that module's docstring for the design.
+Phase 2 (outbound AI calling): the ElevenLabs text-to-speech leg is implemented (`src/calling/tts_agent.py`); Twilio dialing/streaming and speech-to-text are not yet — see `src/calling/call_agent.py`'s docstring for the design.
 
 ## Setup
 
@@ -9,7 +9,7 @@ Phase 2 (outbound AI calling) is scaffolded in `src/calling/` but not implemente
 python -m venv .venv
 .venv\Scripts\activate        # Windows
 pip install -r requirements.txt
-copy .env.example .env        # then fill in OPENAI_API_KEY
+copy .env.example .env        # then fill in OPENAI_API_KEY and (for Phase 2 TTS) ELEVENLABS_API_KEY
 ```
 
 ## Usage
@@ -48,6 +48,20 @@ This prints the extracted fields as JSON and exits.
 Re-running `ingest` is safe — resumes are deduplicated by content hash, so
 the same file is never processed twice.
 
+### TTS dry run (Phase 2, no phone call)
+
+To check the ElevenLabs API key and voice against a line of text, saving the
+result as a local audio file (no Twilio, no dialing):
+
+```bash
+python -m src.calling.tts_dry_run "Hello, this is a test call" out.mp3
+```
+
+`CallAgent.place_call()` already synthesizes the call disclosure and every
+question in `src/calling/questions.py` to audio this way before failing with
+`NotImplementedError`, since there's no Twilio integration yet to send that
+audio through.
+
 ## Tests
 
 ```bash
@@ -57,5 +71,6 @@ pytest
 ## Project layout
 
 See the code comments in `src/calling/call_agent.py` for the Phase 2 plan
-(Twilio outbound calling), and `src/calling/questions.py` for the
-configurable question set it will ask candidates.
+(Twilio outbound calling), `src/calling/tts_agent.py` for the ElevenLabs
+text-to-speech wrapper, and `src/calling/questions.py` for the configurable
+question set and call disclosure it will speak to candidates.
