@@ -1,7 +1,7 @@
 import argparse
 import sys
 
-import anthropic
+import openai
 
 from src.config import EXTRACTION_MODE, ensure_directories
 from src.ingestion.extractor import ExtractionError, extract_candidate
@@ -54,12 +54,12 @@ def run_ingest() -> None:
     mock = EXTRACTION_MODE == "mock"
     if mock:
         logger.warning(
-            "EXTRACTION_MODE=mock -- using free regex-based extraction, not Claude. "
+            "EXTRACTION_MODE=mock -- using free regex-based extraction, not OpenAI. "
             "All candidates will be flagged needs_review."
         )
         client = None
     else:
-        client = anthropic.Anthropic()
+        client = openai.OpenAI()
 
     files = list(scan_incoming())
     if not files:

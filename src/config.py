@@ -15,14 +15,14 @@ DB_PATH = DATA_DIR / "app.db"
 EXCEL_EXPORT_PATH = EXPORTS_DIR / "candidates.xlsx"
 LOGS_DIR = BASE_DIR / "logs"
 
-EXTRACTION_MODEL = "claude-opus-4-8"
+EXTRACTION_MODEL = "gpt-4o"
 
-# "claude" (default) calls the real API and costs tokens. "mock" uses a
+# "openai" (default) calls the real API and costs tokens. "mock" uses a
 # free, regex-based stand-in in src/ingestion/mock_extractor.py -- useful
 # for exercising the pipeline with no API credits. Every candidate produced
 # in mock mode is force-flagged NEEDS_REVIEW; never wire mock output
 # straight to outbound calling.
-EXTRACTION_MODE = os.getenv("EXTRACTION_MODE", "claude").strip().lower()
+EXTRACTION_MODE = os.getenv("EXTRACTION_MODE", "openai").strip().lower()
 
 SUPPORTED_RESUME_EXTENSIONS = {".pdf", ".docx"}
 

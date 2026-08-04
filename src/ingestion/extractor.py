@@ -1,6 +1,6 @@
 import logging
 
-import anthropic
+import openai
 
 from src.config import EXTRACTION_MODEL
 from src.models.schema import ResumeExtraction
@@ -17,30 +17,30 @@ EXTRACTION_PROMPT = (
 
 
 class ExtractionError(Exception):
-    """Raised when Claude fails to produce a valid structured extraction."""
+    """Raised when the model fails to produce a valid structured extraction."""
 
 
-def extract_candidate(resume_text: str, client: anthropic.Anthropic) -> ResumeExtraction:
+def extract_candidate(resume_text: str, client: openai.OpenAI) -> ResumeExtraction:
     try:
-        response = client.messages.parse(
+        completion = client.chat.completions.parse(
             model=EXTRACTION_MODEL,
-            max_tokens=2048,
             messages=[
                 {
                     "role": "user",
                     "content": EXTRACTION_PROMPT.format(resume_text=resume_text),
                 }
             ],
-            output_format=ResumeExtraction,
+            response_format=ResumeExtraction,
         )
-    except anthropic.APIError as exc:
-        raise ExtractionError(f"Claude API error during extraction: {exc}") from exc
+    except openai.APIError as exc:
+        raise ExtractionError(f"OpenAI API error during extraction: {exc}") from exc
 
-    if response.stop_reason == "refusal":
-        raise ExtractionError("Claude refused to process this resume")
+    choice = completion.choices[0]
+    if choice.finish_reason == "content_filter":
+        raise ExtractionError("OpenAI refused to process this resume (content filter)")
 
-    parsed = response.parsed_output
+    parsed = choice.message.parsed
     if parsed is None:
-        raise ExtractionError("Claude did not return a structured extraction")
+        raise ExtractionError("OpenAI did not return a structured extraction")
 
     return parsed

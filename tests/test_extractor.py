@@ -1,24 +1,23 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import anthropic
+import openai
 import pytest
 
 from src.ingestion.extractor import ExtractionError, extract_candidate
 from src.models.schema import ResumeExtraction
 
 
-def _fake_client(parsed_output=None, stop_reason="end_turn", raise_api_error=False):
+def _fake_client(parsed_output=None, finish_reason="stop", raise_api_error=False):
     client = MagicMock()
     if raise_api_error:
-        client.messages.parse.side_effect = anthropic.APIError(
+        client.chat.completions.parse.side_effect = openai.APIError(
             message="boom", request=MagicMock(), body=None
         )
     else:
-        client.messages.parse.return_value = SimpleNamespace(
-            stop_reason=stop_reason, parsed_output=parsed_output
-        )
-    return clientsusuu
+        choice = SimpleNamespace(finish_reason=finish_reason, message=SimpleNamespace(parsed=parsed_output))
+        client.chat.completions.parse.return_value = SimpleNamespace(choices=[choice])
+    return client
 
 
 def test_extract_candidate_success():
@@ -32,15 +31,15 @@ def test_extract_candidate_success():
 
 
 def test_extract_candidate_refusal_raises():
-    client = _fake_client(parsed_output=None, stop_reason="refusal")
+    client = _fake_client(parsed_output=None, finish_reason="content_filter")
     with pytest.raises(ExtractionError):
         extract_candidate("some resume text", client)
 
 
 def test_extract_candidate_malformed_output_raises():
-    # parsed_output is None even though stop_reason looks normal -- simulates
+    # parsed_output is None even though finish_reason looks normal -- simulates
     # a response the SDK couldn't validate against the schema.
-    client = _fake_client(parsed_output=None, stop_reason="end_turn")
+    client = _fake_client(parsed_output=None, finish_reason="stop")
     with pytest.raises(ExtractionError):
         extract_candidate("some resume text", client)
 
