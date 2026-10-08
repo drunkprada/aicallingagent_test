@@ -36,7 +36,7 @@ class TTSAgent:
                 model_id=ELEVENLABS_MODEL,
                 output_format=AUDIO_OUTPUT_FORMAT,
             )
+            # The SDK sends the request lazily when the stream is consumed.
+            return b"".join(audio_stream)
         except ApiError as exc:
             raise TTSError(f"ElevenLabs TTS failed: {exc}") from exc
-
-        return b"".join(audio_stream)
