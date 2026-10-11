@@ -48,6 +48,12 @@ def _build_candidate(resume_hash: str, filename: str, extraction, mock: bool) ->
 
 
 def run_ingest() -> None:
+    if EXTRACTION_MODE not in {"openai", "mock"}:
+        raise ValueError(
+            "Invalid EXTRACTION_MODE. Expected 'openai' or 'mock', "
+            f"got {EXTRACTION_MODE!r}."
+        )
+
     ensure_directories()
     init_db()
 
