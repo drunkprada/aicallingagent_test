@@ -45,8 +45,21 @@ This prints the extracted fields as JSON and exits.
    python -m src.main export
    ```
 
-Re-running `ingest` is safe — resumes are deduplicated by content hash, so
-the same file is never processed twice.
+Successfully extracted resumes are deduplicated by content hash, including
+records flagged `needs_review` for missing fields or mock extraction.
+
+If extraction fails, the candidate is marked `extraction_failed` in SQLite and
+the Excel export, and the resume is moved to `data/processed/failed/`. API
+errors, truncated or filtered responses, invalid structured fields, and empty
+responses follow this path so the rest of the batch can continue.
+
+After resolving the cause, move the failed resume back to
+`data/incoming_resumes/` and run `ingest` again. Extraction is retried in the
+same candidate record, preserving its original creation time and existing call
+answers/history. Older `needs_review` records with an `extraction error:` note
+are also recognised as retryable failures; other reviewed records remain
+deduplicated. Failed files are not retried automatically while they remain in
+the failed folder. Mock-mode retries still require manual review.
 
 ### TTS dry run (Phase 2, no phone call)
 

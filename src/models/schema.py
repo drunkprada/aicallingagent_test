@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 class CandidateStatus(str, Enum):
     EXTRACTED = "extracted"
+    EXTRACTION_FAILED = "extraction_failed"
     NEEDS_REVIEW = "needs_review"
     CALL_PENDING = "call_pending"
     CALL_COMPLETED = "call_completed"

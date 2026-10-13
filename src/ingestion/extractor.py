@@ -1,6 +1,7 @@
 import logging
 
 import openai
+from pydantic import ValidationError
 
 from src.config import EXTRACTION_MODEL
 from src.models.schema import ResumeExtraction
@@ -32,8 +33,17 @@ def extract_candidate(resume_text: str, client: openai.OpenAI) -> ResumeExtracti
             ],
             response_format=ResumeExtraction,
         )
+    except openai.LengthFinishReasonError as exc:
+        raise ExtractionError("OpenAI extraction was truncated by the response length limit") from exc
+    except openai.ContentFilterFinishReasonError as exc:
+        raise ExtractionError("OpenAI refused to process this resume (content filter)") from exc
+    except ValidationError as exc:
+        raise ExtractionError("OpenAI returned invalid structured candidate fields") from exc
     except openai.APIError as exc:
         raise ExtractionError(f"OpenAI API error during extraction: {exc}") from exc
+
+    if not completion.choices:
+        raise ExtractionError("OpenAI returned no extraction choices")
 
     choice = completion.choices[0]
     if choice.finish_reason == "content_filter":

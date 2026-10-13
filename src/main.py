@@ -1,5 +1,6 @@
 import argparse
 import sys
+from typing import Optional
 
 import openai
 
@@ -10,13 +11,14 @@ from src.ingestion.parsers import ParserError, extract_text
 from src.ingestion.resume_loader import hash_file, move_to_failed, move_to_processed, scan_incoming
 from src.logging_config import setup_logging
 from src.models.schema import Candidate, CandidateStatus
-from src.storage.db import candidate_exists, init_db, upsert_candidate
+from src.storage.db import get_candidate, init_db, upsert_candidate
 from src.storage.excel_export import export_candidates
 
 logger = setup_logging()
 
 REQUIRED_FIELDS = ("full_name",)
 CONTACT_FIELDS = ("email", "phone")
+EXTRACTION_ERROR_PREFIX = "extraction error:"
 
 MOCK_MODE_NOTE = (
     "mock/offline extraction (EXTRACTION_MODE=mock) -- regex heuristics only, "
@@ -24,7 +26,9 @@ MOCK_MODE_NOTE = (
 )
 
 
-def _build_candidate(resume_hash: str, filename: str, extraction, mock: bool) -> Candidate:
+def _build_candidate(
+    resume_hash: str, filename: str, extraction, mock: bool, existing: Optional[Candidate] = None
+) -> Candidate:
     notes = []
     for field in REQUIRED_FIELDS:
         if not getattr(extraction, field):
@@ -38,13 +42,25 @@ def _build_candidate(resume_hash: str, filename: str, extraction, mock: bool) ->
     else:
         status = CandidateStatus.NEEDS_REVIEW if notes else CandidateStatus.EXTRACTED
 
-    return Candidate(
-        resume_hash=resume_hash,
-        source_filename=filename,
-        status=status,
-        extraction_notes="; ".join(notes) if notes else None,
+    fields = {
         **extraction.model_dump(),
-    )
+        "resume_hash": resume_hash,
+        "source_filename": filename,
+        "status": status,
+        "extraction_notes": "; ".join(notes) if notes else None,
+    }
+    # Replace extraction fields while retaining creation time and any call answers.
+    return existing.model_copy(update=fields) if existing else Candidate(**fields)
+
+
+def _can_retry_extraction(candidate: Candidate) -> bool:
+    if candidate.status == CandidateStatus.EXTRACTION_FAILED:
+        return True
+    # Older versions used NEEDS_REVIEW for both failed and successful extraction.
+    # Only the pipeline's explicit error note identifies a legacy failure.
+    return candidate.status == CandidateStatus.NEEDS_REVIEW and (
+        candidate.extraction_notes or ""
+    ).startswith(EXTRACTION_ERROR_PREFIX)
 
 
 def run_ingest() -> None:
@@ -76,10 +92,14 @@ def run_ingest() -> None:
     for path in files:
         resume_hash = hash_file(path)
 
-        if candidate_exists(resume_hash):
+        existing = get_candidate(resume_hash)
+        if existing and not _can_retry_extraction(existing):
             logger.info("Skipping %s (already processed, hash matches an existing record)", path.name)
             move_to_processed(path)
             continue
+
+        if existing:
+            logger.info("Retrying extraction for %s", path.name)
 
         try:
             text = extract_text(path)
@@ -95,17 +115,19 @@ def run_ingest() -> None:
                 extraction = extract_candidate(text, client)
         except ExtractionError as exc:
             logger.error("Extraction failed for %s: %s", path.name, exc)
-            candidate = Candidate(
-                resume_hash=resume_hash,
-                source_filename=path.name,
-                status=CandidateStatus.NEEDS_REVIEW,
-                extraction_notes=f"extraction error: {exc}",
+            candidate = existing or Candidate(resume_hash=resume_hash, source_filename=path.name)
+            candidate = candidate.model_copy(
+                update={
+                    "source_filename": path.name,
+                    "status": CandidateStatus.EXTRACTION_FAILED,
+                    "extraction_notes": f"{EXTRACTION_ERROR_PREFIX} {exc}",
+                }
             )
             upsert_candidate(candidate)
             move_to_failed(path)
             continue
 
-        candidate = _build_candidate(resume_hash, path.name, extraction, mock)
+        candidate = _build_candidate(resume_hash, path.name, extraction, mock, existing)
         upsert_candidate(candidate)
         logger.info(
             "Processed %s -> status=%s", path.name, candidate.status.value
