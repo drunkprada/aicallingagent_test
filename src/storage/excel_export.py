@@ -1,4 +1,6 @@
+import re
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 
 from openpyxl import Workbook
 from openpyxl.styles import Font
@@ -30,6 +32,10 @@ COLUMNS = [
     ("created_at", "Added On"),
 ]
 
+# XML 1.0 cannot represent these code points in an XLSX worksheet.
+# Keep tabs, line breaks and valid Unicode; only adapt the exported copy.
+INVALID_XML_TEXT = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
+
 
 def _cell_value(candidate: Candidate, field: str):
     value = getattr(candidate, field)
@@ -53,7 +59,13 @@ def export_candidates(output_path: Path = EXCEL_EXPORT_PATH) -> Path:
 
     for row_idx, candidate in enumerate(candidates, start=2):
         for col_idx, (field, _) in enumerate(COLUMNS, start=1):
-            sheet.cell(row=row_idx, column=col_idx, value=_cell_value(candidate, field))
+            value = _cell_value(candidate, field)
+            if isinstance(value, str):
+                value = INVALID_XML_TEXT.sub("\ufffd", value)
+            cell = sheet.cell(row=row_idx, column=col_idx, value=value)
+            if isinstance(value, str):
+                # Resume/answer text is never a formula or an Excel error value.
+                cell.data_type = "s"
 
     for col_idx, (field, header) in enumerate(COLUMNS, start=1):
         sheet.column_dimensions[get_column_letter(col_idx)].width = max(
@@ -61,5 +73,16 @@ def export_candidates(output_path: Path = EXCEL_EXPORT_PATH) -> Path:
         )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    workbook.save(output_path)
+    # Stage beside the destination so replacement stays on the same filesystem.
+    # Close the temporary handle first so saving also works on Windows.
+    with NamedTemporaryFile(
+        dir=output_path.parent, prefix=f".{output_path.name}.", suffix=".tmp", delete=False
+    ) as temporary:
+        temporary_path = Path(temporary.name)
+    try:
+        workbook.save(temporary_path)
+        temporary_path.replace(output_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+        workbook.close()
     return output_path

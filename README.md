@@ -45,6 +45,17 @@ This prints the extracted fields as JSON and exits.
    python -m src.main export
    ```
 
+Candidate text is exported as literal text, including values beginning with
+`=` and strings such as `#N/A`; it is never treated as an Excel formula or
+error. Characters that cannot be represented in worksheet XML are replaced
+with `�` in the export only. SQLite retains the original values.
+
+Export refreshes are staged in a temporary file and replace `candidates.xlsx`
+only after saving succeeds. A failed save or locked destination keeps the
+previous spreadsheet intact and reports the error. Close the workbook or fix
+the filesystem problem, then run `export` again; stored candidates do not need
+to be re-ingested.
+
 Successfully extracted resumes are deduplicated by content hash, including
 records flagged `needs_review` for missing fields or mock extraction.
 
