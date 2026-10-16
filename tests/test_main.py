@@ -216,3 +216,48 @@ def test_retry_in_mock_mode_stays_flagged_for_review(offline_ingest, monkeypatch
     assert (processed / path.name).exists()
     client.assert_not_called()
     extractor.assert_not_called()
+
+
+def test_table_resume_reaches_database_and_export_without_live_extraction(
+    offline_ingest, monkeypatch
+):
+    incoming, processed, failed, db_path, output, extractor, client = offline_ingest
+    monkeypatch.setattr(main, "EXTRACTION_MODE", "mock")
+    document = Document()
+    table = document.add_table(rows=4, cols=1)
+    for row, text in zip(table.rows, ["Jane Doe", "jane@example.com", "Skills", "Python, SQL"]):
+        row.cells[0].text = text
+    table_path = incoming / "a-table.docx"
+    document.save(table_path)
+    table_hash = resume_loader.hash_file(table_path)
+    # A malformed file and a normal resume in the same batch must still follow
+    # their existing failed/processed paths; no network client may be created.
+    (incoming / "b-corrupt.docx").write_bytes(b"not a DOCX package")
+    normal_path, _ = _resume(incoming, "c-normal.docx")
+
+    main.run_ingest()
+
+    candidate = db.get_candidate(table_hash, db_path)
+    assert candidate is not None
+    assert candidate.full_name == "Jane Doe"
+    assert candidate.email == "jane@example.com"
+    assert candidate.skills == ["Python", "SQL"]
+    assert candidate.status == CandidateStatus.NEEDS_REVIEW
+    assert len(db.get_all_candidates(db_path)) == 2
+    assert (processed / table_path.name).exists()
+    assert (processed / normal_path.name).exists()
+    assert (failed / "b-corrupt.docx").exists()
+    assert not (failed / table_path.name).exists()
+
+    workbook = openpyxl.load_workbook(output)
+    try:
+        rows = list(workbook.active.values)
+        headers = rows[0]
+        table_row = next(row for row in rows[1:] if row[headers.index("Source File")] == table_path.name)
+        assert table_row[headers.index("Email")] == "jane@example.com"
+        assert table_row[headers.index("Skills")] == "Python, SQL"
+        assert table_row[headers.index("Status")] == "needs_review"
+    finally:
+        workbook.close()
+    client.assert_not_called()
+    extractor.assert_not_called()

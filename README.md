@@ -28,6 +28,11 @@ This prints the extracted fields as JSON and exits.
 ### Full pipeline
 
 1. Drop resume files (`.pdf` or `.docx`) into `data/incoming_resumes/`.
+   DOCX extraction reads body paragraphs and table cells in document order,
+   including nested tables. Merged cells are read once; separate cells with
+   matching text are retained. Headers, footers, text boxes and image-only
+   content are not extracted. Blank or malformed documents follow the failed
+   file path rather than producing empty candidate records.
 2. Run the ingest pipeline:
 
    ```bash
