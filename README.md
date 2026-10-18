@@ -64,6 +64,13 @@ to be re-ingested.
 Successfully extracted resumes are deduplicated by content hash, including
 records flagged `needs_review` for missing fields or mock extraction.
 
+In OpenAI mode, the API client is opened only after a new or retryable resume
+has been parsed successfully. Empty, duplicate-only and malformed-file batches
+can therefore archive files and refresh the export without an API key. When
+extraction is needed, missing credentials still stop the run and leave that
+resume in the incoming folder for retry. One client is reused for the batch
+and closed on both normal completion and processing errors.
+
 If extraction fails, the candidate is marked `extraction_failed` in SQLite and
 the Excel export, and the resume is moved to `data/processed/failed/`. API
 errors, truncated or filtered responses, invalid structured fields, and empty

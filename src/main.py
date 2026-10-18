@@ -1,5 +1,6 @@
 import argparse
 import sys
+from contextlib import ExitStack
 from typing import Optional
 
 import openai
@@ -74,14 +75,12 @@ def run_ingest() -> None:
     init_db()
 
     mock = EXTRACTION_MODE == "mock"
+    client = None
     if mock:
         logger.warning(
             "EXTRACTION_MODE=mock -- using free regex-based extraction, not OpenAI. "
             "All candidates will be flagged needs_review."
         )
-        client = None
-    else:
-        client = openai.OpenAI()
 
     files = list(scan_incoming())
     if not files:
@@ -89,50 +88,55 @@ def run_ingest() -> None:
     else:
         logger.info("Found %d resume(s) to process", len(files))
 
-    for path in files:
-        resume_hash = hash_file(path)
+    # Empty, duplicate-only and unparseable batches need no API credentials.
+    # Once opened, one client serves the batch and closes even on an exception.
+    with ExitStack() as resources:
+        for path in files:
+            resume_hash = hash_file(path)
 
-        existing = get_candidate(resume_hash)
-        if existing and not _can_retry_extraction(existing):
-            logger.info("Skipping %s (already processed, hash matches an existing record)", path.name)
-            move_to_processed(path)
-            continue
+            existing = get_candidate(resume_hash)
+            if existing and not _can_retry_extraction(existing):
+                logger.info("Skipping %s (already processed, hash matches an existing record)", path.name)
+                move_to_processed(path)
+                continue
 
-        if existing:
-            logger.info("Retrying extraction for %s", path.name)
+            if existing:
+                logger.info("Retrying extraction for %s", path.name)
 
-        try:
-            text = extract_text(path)
-        except ParserError as exc:
-            logger.error("Parse failed for %s: %s", path.name, exc)
-            move_to_failed(path)
-            continue
+            try:
+                text = extract_text(path)
+            except ParserError as exc:
+                logger.error("Parse failed for %s: %s", path.name, exc)
+                move_to_failed(path)
+                continue
 
-        try:
-            if mock:
-                extraction = extract_candidate_mock(text)
-            else:
-                extraction = extract_candidate(text, client)
-        except ExtractionError as exc:
-            logger.error("Extraction failed for %s: %s", path.name, exc)
-            candidate = existing or Candidate(resume_hash=resume_hash, source_filename=path.name)
-            candidate = candidate.model_copy(
-                update={
-                    "source_filename": path.name,
-                    "status": CandidateStatus.EXTRACTION_FAILED,
-                    "extraction_notes": f"{EXTRACTION_ERROR_PREFIX} {exc}",
-                }
-            )
+            try:
+                if mock:
+                    extraction = extract_candidate_mock(text)
+                else:
+                    if client is None:
+                        client = resources.enter_context(openai.OpenAI())
+                    extraction = extract_candidate(text, client)
+            except ExtractionError as exc:
+                logger.error("Extraction failed for %s: %s", path.name, exc)
+                candidate = existing or Candidate(resume_hash=resume_hash, source_filename=path.name)
+                candidate = candidate.model_copy(
+                    update={
+                        "source_filename": path.name,
+                        "status": CandidateStatus.EXTRACTION_FAILED,
+                        "extraction_notes": f"{EXTRACTION_ERROR_PREFIX} {exc}",
+                    }
+                )
+                upsert_candidate(candidate)
+                move_to_failed(path)
+                continue
+
+            candidate = _build_candidate(resume_hash, path.name, extraction, mock, existing)
             upsert_candidate(candidate)
-            move_to_failed(path)
-            continue
-
-        candidate = _build_candidate(resume_hash, path.name, extraction, mock, existing)
-        upsert_candidate(candidate)
-        logger.info(
-            "Processed %s -> status=%s", path.name, candidate.status.value
-        )
-        move_to_processed(path)
+            logger.info(
+                "Processed %s -> status=%s", path.name, candidate.status.value
+            )
+            move_to_processed(path)
 
     output_path = export_candidates()
     logger.info("Excel export refreshed at %s", output_path)

@@ -1,13 +1,15 @@
 import shutil
 from unittest.mock import MagicMock
 
+import httpx
 import openpyxl
 import pytest
 from docx import Document
+from openai import OpenAI, OpenAIError
 
 from src import main
 from src.ingestion import resume_loader
-from src.ingestion.extractor import ExtractionError
+from src.ingestion.extractor import ExtractionError, extract_candidate
 from src.models.schema import Candidate, CandidateStatus, ResumeExtraction
 from src.storage import db, excel_export
 
@@ -44,6 +46,7 @@ def offline_ingest(tmp_path, monkeypatch):
     output = tmp_path / "candidates.xlsx"
     extractor = MagicMock()
     client = MagicMock()
+    client.return_value.__enter__.return_value = client.return_value
 
     monkeypatch.setattr(resume_loader, "INCOMING_RESUMES_DIR", incoming)
     monkeypatch.setattr(resume_loader, "PROCESSED_DIR", processed)
@@ -98,7 +101,7 @@ def test_failed_extraction_can_be_retried(offline_ingest):
     CandidateStatus.EXTRACTED, CandidateStatus.NEEDS_REVIEW, CandidateStatus.CALL_COMPLETED,
 ])
 def test_successful_records_are_still_deduplicated(offline_ingest, status):
-    incoming, processed, _, db_path, _, extractor, _ = offline_ingest
+    incoming, processed, _, db_path, _, extractor, client = offline_ingest
     path, resume_hash = _resume(incoming)
     db.init_db(db_path)
     db.upsert_candidate(Candidate(
@@ -111,6 +114,7 @@ def test_successful_records_are_still_deduplicated(offline_ingest, status):
     main.run_ingest()
 
     extractor.assert_not_called()
+    client.assert_not_called()
     assert db.get_candidate(resume_hash, db_path) == before
     assert (processed / path.name).exists()
     assert len(db.get_all_candidates(db_path)) == 1
@@ -216,6 +220,117 @@ def test_retry_in_mock_mode_stays_flagged_for_review(offline_ingest, monkeypatch
     assert (processed / path.name).exists()
     client.assert_not_called()
     extractor.assert_not_called()
+
+
+def test_empty_batch_exports_without_opening_an_api_client(offline_ingest):
+    _, _, _, db_path, output, extractor, client = offline_ingest
+
+    main.run_ingest()
+
+    client.assert_not_called()
+    extractor.assert_not_called()
+    assert db.get_all_candidates(db_path) == []
+    workbook = openpyxl.load_workbook(output)
+    try:
+        assert workbook.active.max_row == 1
+    finally:
+        workbook.close()
+
+
+def test_malformed_batch_is_archived_and_exported_without_api_client(offline_ingest):
+    incoming, _, failed, db_path, output, extractor, client = offline_ingest
+    for filename in ("bad.docx", "bad.pdf"):
+        (incoming / filename).write_bytes(b"not a resume document")
+
+    main.run_ingest()
+
+    client.assert_not_called()
+    extractor.assert_not_called()
+    assert (failed / "bad.docx").exists()
+    assert (failed / "bad.pdf").exists()
+    assert db.get_all_candidates(db_path) == []
+    assert output.exists()
+
+
+def test_api_client_opens_after_parsing_and_is_reused_for_the_batch(offline_ingest, monkeypatch):
+    incoming, _, _, _, _, extractor, client = offline_ingest
+    first, _ = _resume(incoming, "a-first.docx")
+    second, _ = _resume(incoming, "b-second.docx")
+    document = Document(second)
+    document.add_paragraph("Python")
+    document.save(second)
+    parse = main.extract_text
+    parsed_paths = []
+
+    def observed_parse(path):
+        # The first valid document must be parsed before credentials are needed.
+        assert client.call_count == len(parsed_paths)
+        parsed_paths.append(path)
+        return parse(path)
+
+    monkeypatch.setattr(main, "extract_text", observed_parse)
+    extractor.return_value = ResumeExtraction(full_name="Jane Doe", email="jane@example.com")
+
+    main.run_ingest()
+
+    assert parsed_paths == [first, second]
+    client.assert_called_once_with()
+    client.return_value.__enter__.assert_called_once()
+    client.return_value.__exit__.assert_called_once()
+    assert extractor.call_count == 2
+    assert all(call.args[1] is client.return_value for call in extractor.call_args_list)
+
+
+def test_missing_credentials_leave_valid_resume_available_for_retry(offline_ingest, monkeypatch):
+    incoming, _, failed, db_path, _, extractor, _ = offline_ingest
+    path, _ = _resume(incoming)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(main.openai, "OpenAI", OpenAI)
+    parse = MagicMock(wraps=main.extract_text)
+    monkeypatch.setattr(main, "extract_text", parse)
+
+    with pytest.raises(OpenAIError, match="api_key"):
+        main.run_ingest()
+
+    parse.assert_called_once_with(path)
+    extractor.assert_not_called()
+    assert path.exists()
+    assert not (failed / path.name).exists()
+    assert db.get_all_candidates(db_path) == []
+
+
+@pytest.mark.parametrize("outcome", ["success", "api_error", "storage_error"])
+def test_real_sdk_transport_is_closed_on_success_and_failure(offline_ingest, monkeypatch, outcome):
+    incoming, _, _, _, _, _, factory = offline_ingest
+    _resume(incoming)
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        if outcome == "api_error":
+            return httpx.Response(400, json={"error": {"message": "offline rejection"}})
+        return httpx.Response(200, json={
+            "id": "offline-completion", "object": "chat.completion", "created": 0,
+            "model": "gpt-4o", "choices": [{"index": 0, "finish_reason": "stop",
+                "message": {"role": "assistant", "content": '{"full_name":"Jane Doe"}'}}],
+        })
+
+    http_client = httpx.Client(transport=httpx.MockTransport(respond))
+    sdk_client = OpenAI(api_key="offline-test-key", http_client=http_client)
+    factory.return_value = sdk_client
+    monkeypatch.setattr(main, "extract_candidate", extract_candidate)
+    if outcome == "storage_error":
+        monkeypatch.setattr(main, "upsert_candidate", MagicMock(side_effect=OSError("offline disk error")))
+    try:
+        if outcome == "storage_error":
+            with pytest.raises(OSError, match="offline disk error"):
+                main.run_ingest()
+        else:
+            main.run_ingest()
+        assert http_client.is_closed
+        assert len(requests) == 1
+    finally:
+        sdk_client.close()
 
 
 def test_table_resume_reaches_database_and_export_without_live_extraction(
