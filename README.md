@@ -61,6 +61,12 @@ previous spreadsheet intact and reports the error. Close the workbook or fix
 the filesystem problem, then run `export` again; stored candidates do not need
 to be re-ingested.
 
+If an incoming file is locked, unreadable or removed after scanning, ingestion
+logs the read error and continues with the remaining resumes and the export.
+A file that still exists stays in the incoming folder; unlock it or restore
+read permissions, then run `ingest` again. It is not archived and no candidate
+record is created until its bytes can be read.
+
 Successfully extracted resumes are deduplicated by content hash, including
 records flagged `needs_review` for missing fields or mock extraction.
 
@@ -101,8 +107,12 @@ audio through.
 ## Tests
 
 ```bash
-pytest
+python -m pytest
 ```
+
+GitHub Actions runs the suite on pushes and pull requests. Tests block outbound
+socket connections and use mocked API transports; no service credentials or
+live calling integrations are used.
 
 ## Project layout
 

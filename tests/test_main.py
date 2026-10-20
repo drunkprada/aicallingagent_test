@@ -376,3 +376,82 @@ def test_table_resume_reaches_database_and_export_without_live_extraction(
         workbook.close()
     client.assert_not_called()
     extractor.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["permission", "disappeared"])
+def test_unreadable_resume_does_not_stop_batch_or_export(
+    offline_ingest, monkeypatch, caplog, failure
+):
+    incoming, processed, failed, db_path, output, extractor, client = offline_ingest
+    bad, _ = _resume(incoming, "a-unreadable.docx")
+    good, good_hash = _resume(incoming, "b-readable.docx")
+    real_hash = main.hash_file
+
+    def hash_with_file_error(path):
+        if path == bad:
+            if failure == "disappeared":
+                bad.unlink()
+                raise FileNotFoundError("resume removed after scan")
+            raise PermissionError("resume is locked")
+        return real_hash(path)
+
+    monkeypatch.setattr(main, "hash_file", hash_with_file_error)
+    extractor.return_value = ResumeExtraction(
+        full_name="Jane Doe", email="jane@example.com"
+    )
+
+    main.run_ingest()
+
+    assert bad.exists() is (failure == "permission")
+    assert not (processed / bad.name).exists()
+    assert not (failed / bad.name).exists()
+    assert (processed / good.name).exists()
+    candidate = db.get_candidate(good_hash, db_path)
+    assert candidate.source_filename == good.name
+    assert candidate.status == CandidateStatus.EXTRACTED
+    assert len(db.get_all_candidates(db_path)) == 1
+    extractor.assert_called_once()
+    client.return_value.__exit__.assert_called_once()
+    assert "Skipping unreadable resume a-unreadable.docx" in caplog.text
+    workbook = openpyxl.load_workbook(output)
+    try:
+        rows = list(workbook.active.values)
+        source_column = rows[0].index("Source File")
+        assert [row[source_column] for row in rows[1:]] == [good.name]
+    finally:
+        workbook.close()
+
+
+def test_locked_resume_stays_available_and_succeeds_after_unlock(
+    offline_ingest, monkeypatch
+):
+    incoming, processed, failed, db_path, output, extractor, client = offline_ingest
+    path, resume_hash = _resume(incoming)
+    real_hash = main.hash_file
+    monkeypatch.setattr(
+        main, "hash_file", MagicMock(side_effect=PermissionError("resume is locked"))
+    )
+
+    main.run_ingest()
+
+    assert path.exists()
+    assert db.get_all_candidates(db_path) == []
+    extractor.assert_not_called()
+    client.assert_not_called()
+    workbook = openpyxl.load_workbook(output)
+    try:
+        assert workbook.active.max_row == 1
+    finally:
+        workbook.close()
+
+    monkeypatch.setattr(main, "hash_file", real_hash)
+    extractor.return_value = ResumeExtraction(
+        full_name="Jane Doe", email="jane@example.com"
+    )
+    main.run_ingest()
+
+    assert not path.exists()
+    assert (processed / path.name).exists()
+    assert not (failed / path.name).exists()
+    assert db.get_candidate(resume_hash, db_path).status == CandidateStatus.EXTRACTED
+    extractor.assert_called_once()

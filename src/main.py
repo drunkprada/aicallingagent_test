@@ -92,7 +92,14 @@ def run_ingest() -> None:
     # Once opened, one client serves the batch and closes even on an exception.
     with ExitStack() as resources:
         for path in files:
-            resume_hash = hash_file(path)
+            try:
+                resume_hash = hash_file(path)
+            except OSError as exc:
+                # A single locked/unreadable file (or one removed after the
+                # scan) must not prevent other resumes and exports progressing.
+                # Do not archive a file whose bytes could not be read.
+                logger.error("Skipping unreadable resume %s: %s", path.name, exc)
+                continue
 
             existing = get_candidate(resume_hash)
             if existing and not _can_retry_extraction(existing):
