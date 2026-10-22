@@ -99,10 +99,11 @@ result as a local audio file (no Twilio, no dialing):
 python -m src.calling.tts_dry_run "Hello, this is a test call" out.mp3
 ```
 
-`CallAgent.place_call()` already synthesizes the call disclosure and every
-question in `src/calling/questions.py` to audio this way before failing with
-`NotImplementedError`, since there's no Twilio integration yet to send that
-audio through.
+`CallAgent.place_call()` fails before constructing an API client or
+synthesizing audio while dialing and its required safeguards remain
+unimplemented. This prevents an unfinished call attempt from spending TTS
+credits or contacting an external service. Use the explicit TTS dry run above
+when you intentionally want to test ElevenLabs without placing a phone call.
 
 ## Tests
 

@@ -19,7 +19,7 @@ available):
 
   Compliance requirements this must enforce before it can place real calls:
     - Recorded-call / AI-assistant disclosure at the very start of the call
-      (CALL_DISCLOSURE in questions.py, already synthesized below).
+      (CALL_DISCLOSURE in questions.py).
     - Opt-out handling (candidate can ask to stop being called).
     - Business-hours-only dialing window (configurable per region).
     - A capped number of call attempts per candidate, with the candidate
@@ -34,13 +34,15 @@ available):
 from typing import Dict, Optional
 
 from src.calling.questions import CALL_DISCLOSURE, REQUIRED_CALL_QUESTIONS
-from src.calling.tts_agent import TTSAgent, TTSError
+from src.calling.tts_agent import TTSAgent
 from src.models.schema import Candidate, CallResult
 
 
 class CallAgent:
     def __init__(self, tts: Optional[TTSAgent] = None):
-        self.tts = tts or TTSAgent()
+        # Construct the SDK client only for an explicit prompt-synthesis run.
+        # place_call() must remain side-effect free until dialing is implemented.
+        self.tts = tts
 
     def _synthesize_prompts(self) -> Dict[str, bytes]:
         """Synthesize the disclosure line and every required question into
@@ -48,20 +50,13 @@ class CallAgent:
         leg of the pipeline works before dialing is wired up."""
         prompts = {"disclosure": CALL_DISCLOSURE}
         prompts.update({q["field"]: q["question"] for q in REQUIRED_CALL_QUESTIONS})
-        return {field: self.tts.synthesize(text) for field, text in prompts.items()}
+        tts = self.tts or TTSAgent()
+        return {field: tts.synthesize(text) for field, text in prompts.items()}
 
     def place_call(self, candidate: Candidate) -> CallResult:
-        try:
-            self._synthesize_prompts()
-        except TTSError as exc:
-            raise NotImplementedError(
-                "Outbound calling is not implemented yet (Phase 2), and TTS "
-                f"synthesis failed before reaching that point: {exc}"
-            ) from exc
-
         raise NotImplementedError(
-            "Outbound calling is not implemented yet (Phase 2): call prompts "
-            "were synthesized to audio successfully, but there is no Twilio "
-            "dial/stream integration to send them through yet. "
-            "See the module docstring for the planned design."
+            "Outbound calling is disabled until the Twilio dial/stream, "
+            "consent, opt-out, business-hours and attempt-limit safeguards "
+            "described in this module are implemented. No TTS or phone "
+            "service was contacted."
         )
