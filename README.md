@@ -67,6 +67,15 @@ A file that still exists stays in the incoming folder; unlock it or restore
 read permissions, then run `ingest` again. It is not archived and no candidate
 record is created until its bytes can be read.
 
+If a file cannot be moved into the processed or failed archive, ingestion logs
+the destination and filesystem error, continues with the other resumes, and
+refreshes the export. Any candidate already saved in SQLite remains intact.
+Resolve the archive permissions or lock, then rerun `ingest` for files still in
+the incoming folder. Successfully extracted records are only archived on retry;
+they are not extracted again. Failed extraction records still follow the retry
+rules below, so an unarchived failed resume may trigger another extraction on
+the next run.
+
 Successfully extracted resumes are deduplicated by content hash, including
 records flagged `needs_review` for missing fields or mock extraction.
 

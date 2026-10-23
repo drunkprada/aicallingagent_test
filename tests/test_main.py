@@ -455,3 +455,104 @@ def test_locked_resume_stays_available_and_succeeds_after_unlock(
     assert not (failed / path.name).exists()
     assert db.get_candidate(resume_hash, db_path).status == CandidateStatus.EXTRACTED
     extractor.assert_called_once()
+
+
+@pytest.mark.parametrize("outcome", ["success", "duplicate", "parse_failure", "extraction_failure"])
+def test_archive_failure_does_not_stop_remaining_resumes_or_export(
+    offline_ingest, monkeypatch, caplog, outcome
+):
+    incoming, processed, failed, db_path, output, extractor, client = offline_ingest
+    blocked, blocked_hash = _resume(incoming, "a-blocked.docx")
+    good, _ = _resume(incoming, "b-good.docx")
+    document = Document(good)
+    document.add_paragraph("A distinct second resume")
+    document.save(good)
+    good_hash = resume_loader.hash_file(good)
+    db.init_db(db_path)
+    before = None
+    if outcome == "duplicate":
+        db.upsert_candidate(Candidate(
+            resume_hash=blocked_hash, source_filename="original.docx",
+            full_name="Reviewed Name", call_attempts=2,
+            salary_expectation="Reviewed answer",
+        ), db_path)
+        before = db.get_candidate(blocked_hash, db_path)
+    elif outcome == "parse_failure":
+        blocked.write_bytes(b"malformed DOCX")
+        blocked_hash = resume_loader.hash_file(blocked)
+    extraction = ResumeExtraction(full_name="Jane Doe", email="jane@example.com")
+    extractor.side_effect = (
+        [ExtractionError("offline rejection"), extraction]
+        if outcome == "extraction_failure" else None
+    )
+    extractor.return_value = extraction
+
+    archive_name = (
+        "move_to_failed" if outcome in {"parse_failure", "extraction_failure"}
+        else "move_to_processed"
+    )
+    real_archive = getattr(main, archive_name)
+
+    def locked_archive(path):
+        if path == blocked:
+            raise PermissionError("archive destination locked")
+        return real_archive(path)
+
+    monkeypatch.setattr(main, archive_name, locked_archive)
+
+    main.run_ingest()
+
+    assert blocked.exists()
+    assert not (processed / blocked.name).exists()
+    assert not (failed / blocked.name).exists()
+    assert (processed / good.name).exists()
+    assert db.get_candidate(good_hash, db_path).status == CandidateStatus.EXTRACTED
+    record = db.get_candidate(blocked_hash, db_path)
+    if outcome == "parse_failure":
+        assert record is None
+    elif outcome == "duplicate":
+        assert record == before
+    else:
+        assert record.status == (
+            CandidateStatus.EXTRACTION_FAILED
+            if outcome == "extraction_failure" else CandidateStatus.EXTRACTED
+        )
+    assert "Could not archive a-blocked.docx" in caplog.text
+    assert "archive destination locked" in caplog.text
+    client.return_value.__exit__.assert_called_once()
+    workbook = openpyxl.load_workbook(output)
+    try:
+        rows = list(workbook.active.values)
+        assert len(rows) == len(db.get_all_candidates(db_path)) + 1
+        assert "b-good.docx" in {row[rows[0].index("Source File")] for row in rows[1:]}
+    finally:
+        workbook.close()
+
+
+def test_successful_extraction_is_not_repeated_after_archive_failure(
+    offline_ingest, monkeypatch
+):
+    incoming, processed, _, db_path, _, extractor, client = offline_ingest
+    path, resume_hash = _resume(incoming)
+    real_archive = main.move_to_processed
+    monkeypatch.setattr(
+        main, "move_to_processed", MagicMock(side_effect=PermissionError("locked"))
+    )
+    extractor.return_value = ResumeExtraction(full_name="Jane Doe", email="jane@example.com")
+
+    main.run_ingest()
+    before = db.get_candidate(resume_hash, db_path)
+    assert path.exists()
+    extractor.assert_called_once()
+
+    monkeypatch.setattr(main, "move_to_processed", real_archive)
+    extractor.reset_mock()
+    client.reset_mock()
+    main.run_ingest()
+
+    assert (processed / path.name).exists()
+    assert not path.exists()
+    assert db.get_candidate(resume_hash, db_path) == before
+    assert len(db.get_all_candidates(db_path)) == 1
+    extractor.assert_not_called()
+    client.assert_not_called()

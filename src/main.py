@@ -1,6 +1,7 @@
 import argparse
 import sys
 from contextlib import ExitStack
+from pathlib import Path
 from typing import Optional
 
 import openai
@@ -64,6 +65,21 @@ def _can_retry_extraction(candidate: Candidate) -> bool:
     ).startswith(EXTRACTION_ERROR_PREFIX)
 
 
+def _archive_resume(path: Path, *, failed: bool = False) -> None:
+    """An archive error must not discard stored results or stop the batch."""
+    try:
+        if failed:
+            move_to_failed(path)
+        else:
+            move_to_processed(path)
+    except OSError as exc:
+        logger.error(
+            "Could not archive %s to %s: %s. Stored records are unchanged; "
+            "resolve the filesystem error and rerun ingest for files still incoming.",
+            path.name, "failed" if failed else "processed", exc,
+        )
+
+
 def run_ingest() -> None:
     if EXTRACTION_MODE not in {"openai", "mock"}:
         raise ValueError(
@@ -104,7 +120,7 @@ def run_ingest() -> None:
             existing = get_candidate(resume_hash)
             if existing and not _can_retry_extraction(existing):
                 logger.info("Skipping %s (already processed, hash matches an existing record)", path.name)
-                move_to_processed(path)
+                _archive_resume(path)
                 continue
 
             if existing:
@@ -114,7 +130,7 @@ def run_ingest() -> None:
                 text = extract_text(path)
             except ParserError as exc:
                 logger.error("Parse failed for %s: %s", path.name, exc)
-                move_to_failed(path)
+                _archive_resume(path, failed=True)
                 continue
 
             try:
@@ -135,7 +151,7 @@ def run_ingest() -> None:
                     }
                 )
                 upsert_candidate(candidate)
-                move_to_failed(path)
+                _archive_resume(path, failed=True)
                 continue
 
             candidate = _build_candidate(resume_hash, path.name, extraction, mock, existing)
@@ -143,7 +159,7 @@ def run_ingest() -> None:
             logger.info(
                 "Processed %s -> status=%s", path.name, candidate.status.value
             )
-            move_to_processed(path)
+            _archive_resume(path)
 
     output_path = export_candidates()
     logger.info("Excel export refreshed at %s", output_path)
