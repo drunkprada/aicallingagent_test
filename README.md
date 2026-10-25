@@ -79,6 +79,13 @@ the next run.
 Successfully extracted resumes are deduplicated by content hash, including
 records flagged `needs_review` for missing fields or mock extraction.
 
+Extracted text fields are trimmed, blank values become missing fields, and
+empty skill entries are removed. Blank names or contact details therefore
+follow the existing `needs_review` checks. Experience must be a finite,
+non-negative number; invalid model output follows the `extraction_failed`
+path and can be retried after the cause is resolved. This validation applies
+to new extractions and does not rewrite existing stored records.
+
 In OpenAI mode, the API client is opened only after a new or retryable resume
 has been parsed successfully. Empty, duplicate-only and malformed-file batches
 can therefore archive files and refresh the export without an API key. When

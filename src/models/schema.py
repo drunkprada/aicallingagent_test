@@ -1,7 +1,8 @@
 from enum import Enum
+from math import isfinite
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class CandidateStatus(str, Enum):
@@ -14,7 +15,7 @@ class CandidateStatus(str, Enum):
 
 
 class ResumeExtraction(BaseModel):
-    """Structured fields Claude extracts directly from resume text."""
+    """Validated fields extracted directly from resume text."""
 
     full_name: Optional[str] = None
     email: Optional[str] = None
@@ -25,6 +26,26 @@ class ResumeExtraction(BaseModel):
     education: Optional[str] = None
     location: Optional[str] = None
     current_salary: Optional[str] = None
+
+    @field_validator(
+        "full_name", "email", "phone", "current_title", "education", "location",
+        "current_salary",
+    )
+    @classmethod
+    def normalize_optional_text(cls, value: Optional[str]) -> Optional[str]:
+        return (value.strip() or None) if value is not None else None
+
+    @field_validator("skills")
+    @classmethod
+    def normalize_skills(cls, values: List[str]) -> List[str]:
+        return [skill.strip() for skill in values if skill.strip()]
+
+    @field_validator("years_experience")
+    @classmethod
+    def validate_experience(cls, value: Optional[float]) -> Optional[float]:
+        if value is not None and (not isfinite(value) or value < 0):
+            raise ValueError("years_experience must be finite and non-negative")
+        return value
 
 
 class Candidate(BaseModel):

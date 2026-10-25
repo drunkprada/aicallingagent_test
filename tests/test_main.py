@@ -556,3 +556,70 @@ def test_successful_extraction_is_not_repeated_after_archive_failure(
     assert len(db.get_all_candidates(db_path)) == 1
     extractor.assert_not_called()
     client.assert_not_called()
+
+
+@pytest.mark.parametrize("case", ["blank_fields", "negative_experience", "infinite_experience"])
+def test_invalid_sdk_fields_are_reviewed_or_failed_without_stopping_batch(
+    offline_ingest, monkeypatch, case
+):
+    incoming, processed, failed, db_path, output, _, factory = offline_ingest
+    first, first_hash = _resume(incoming, "a-invalid-fields.docx")
+    second, _ = _resume(incoming, "b-valid-fields.docx")
+    document = Document(second)
+    document.add_paragraph("A different resume")
+    document.save(second)
+    second_hash = resume_loader.hash_file(second)
+    valid = '{"full_name":"Jane Doe","email":"jane@example.com","years_experience":2.5}'
+    if case == "blank_fields":
+        invalid = '{"full_name":"  ","email":"  ","phone":"  ","skills":[" ","Python"]}'
+    else:
+        years = "-1" if case == "negative_experience" else "1e309"
+        invalid = '{"full_name":"Jane Doe","email":"jane@example.com","years_experience":' + years + '}'
+    responses = iter([invalid, valid])
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, json={
+            "id": "offline-completion", "object": "chat.completion", "created": 0,
+            "model": "gpt-4o", "choices": [{"index": 0, "finish_reason": "stop",
+                "message": {"role": "assistant", "content": next(responses)}}],
+        })
+
+    http_client = httpx.Client(transport=httpx.MockTransport(respond))
+    sdk_client = OpenAI(api_key="offline-test-key", http_client=http_client)
+    factory.return_value = sdk_client
+    monkeypatch.setattr(main, "extract_candidate", extract_candidate)
+    try:
+        main.run_ingest()
+        first_record = db.get_candidate(first_hash, db_path)
+        if case == "blank_fields":
+            assert first_record.status == CandidateStatus.NEEDS_REVIEW
+            assert first_record.full_name is None
+            assert first_record.email is None
+            assert first_record.phone is None
+            assert first_record.skills == ["Python"]
+            assert "missing full_name" in first_record.extraction_notes
+            assert "missing both email and phone" in first_record.extraction_notes
+            assert (processed / first.name).exists()
+        else:
+            assert first_record.status == CandidateStatus.EXTRACTION_FAILED
+            assert first_record.extraction_notes.startswith("extraction error:")
+            assert first_record.years_experience is None
+            assert (failed / first.name).exists()
+        assert (processed / second.name).exists()
+        assert db.get_candidate(second_hash, db_path).years_experience == 2.5
+        assert len(requests) == 2
+        assert http_client.is_closed
+        workbook = openpyxl.load_workbook(output)
+        try:
+            rows = list(workbook.active.values)
+            status_column = rows[0].index("Status")
+            assert len(rows) == 3
+            assert {row[status_column] for row in rows[1:]} == {
+                first_record.status.value, "extracted",
+            }
+        finally:
+            workbook.close()
+    finally:
+        sdk_client.close()
