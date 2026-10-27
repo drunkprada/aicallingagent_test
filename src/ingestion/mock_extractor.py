@@ -1,11 +1,11 @@
-"""Zero-cost, regex-based stand-in for the Claude extractor.
+"""Zero-cost, regex-based stand-in for the structured extractor.
 
-Used when EXTRACTION_MODE=mock (no ANTHROPIC_API_KEY / no API credits
+Used when EXTRACTION_MODE=mock (no OPENAI_API_KEY / no API credits
 required). This is deliberately crude -- it exists only to exercise the rest
 of the pipeline (parsing, storage, Excel export) for free. Every candidate it
 produces is force-flagged NEEDS_REVIEW in main.py because heuristic
-extraction cannot be trusted the way Claude's structured extraction can.
-Swap EXTRACTION_MODE back to "claude" once API credits are available -- no
+extraction still needs manual review.
+Swap EXTRACTION_MODE back to "openai" once API credits are available -- no
 other code changes needed.
 """
 
@@ -20,23 +20,26 @@ EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 PHONE_RE = re.compile(r"(\+?\(?\d[\d\-\.\(\)\t ]{6,}\d)")
 YEARS_RE = re.compile(r"(\d+)\+?\s*(?:years|yrs)\b", re.IGNORECASE)
 SECTION_HEADER_RE = re.compile(
-    r"^\s*(skills|technical skills|core competencies|education)\s*:?\s*$",
+    r"\s*(?:skills|technical skills|core competencies|education|experience|"
+    r"work experience|professional experience|projects|certifications)\s*:?\s*",
     re.IGNORECASE,
 )
 
 
 def _find_section(lines: List[str], header_pattern: str) -> Optional[str]:
-    header_re = re.compile(rf"^\s*{header_pattern}\s*:?\s*$", re.IGNORECASE)
+    # Group alternatives before applying whole-line matching: prose containing
+    # "skills" is not a section heading.
+    header_re = re.compile(rf"\s*(?:{header_pattern})\s*:?\s*", re.IGNORECASE)
     for idx, line in enumerate(lines):
-        if header_re.match(line):
+        if header_re.fullmatch(line):
             collected = []
-            for following in lines[idx + 1 : idx + 6]:
+            for following in lines[idx + 1 :]:
                 stripped = following.strip()
                 if not stripped:
                     if collected:
                         break
                     continue
-                if SECTION_HEADER_RE.match(stripped):
+                if SECTION_HEADER_RE.fullmatch(stripped):
                     break
                 collected.append(stripped)
             return "\n".join(collected) if collected else None
@@ -67,7 +70,10 @@ def extract_candidate_mock(resume_text: str) -> ResumeExtraction:
     skills_blob = _find_section(lines, "skills|technical skills|core competencies")
     skills: List[str] = []
     if skills_blob:
-        for chunk in re.split(r"[,;•\-\n]", skills_blob):
+        # A leading dash is a list marker, but internal hyphens belong to
+        # names such as scikit-learn and problem-solving.
+        skills_blob = re.sub(r"^\s*-\s*", "", skills_blob, flags=re.MULTILINE)
+        for chunk in re.split(r"[,;•\n]", skills_blob):
             item = chunk.strip(" \t.")
             if item:
                 skills.append(item)

@@ -79,6 +79,14 @@ the next run.
 Successfully extracted resumes are deduplicated by content hash, including
 records flagged `needs_review` for missing fields or mock extraction.
 
+For free offline pipeline testing, set `EXTRACTION_MODE=mock`. Skills and
+education use standalone headings (optionally followed by a colon), ending at
+a blank line or a recognised heading: Skills, Technical Skills, Core Competencies,
+Education, Experience, Work Experience, Professional Experience, Projects or
+Certifications. Sections are not limited to five lines, and hyphenated skills
+such as `scikit-learn` remain intact. Other layouts may still be misread; all
+mock results require manual review. Existing stored records are not re-extracted.
+
 Extracted text fields are trimmed, blank values become missing fields, and
 empty skill entries are removed. Blank names or contact details therefore
 follow the existing `needs_review` checks. Experience must be a finite,

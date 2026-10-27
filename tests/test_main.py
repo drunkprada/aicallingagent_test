@@ -378,6 +378,45 @@ def test_table_resume_reaches_database_and_export_without_live_extraction(
     extractor.assert_not_called()
 
 
+def test_mock_sections_reach_storage_and_export_without_work_history(
+    offline_ingest, monkeypatch
+):
+    incoming, processed, _, db_path, output, extractor, client = offline_ingest
+    monkeypatch.setattr(main, "EXTRACTION_MODE", "mock")
+    document = Document()
+    for line in [
+        "Jane Doe", "jane@example.com", "Skills developed through work",
+        "This sentence is not a heading", "Technical Skills:",
+        "- scikit-learn, Python", "SQL", "Docker", "Git", "Linux", "React",
+        "Work Experience", "Built a recruitment portal", "Education",
+        "BSc Computer Science", "Example University", "Projects", "A web portal",
+    ]:
+        document.add_paragraph(line)
+    path = incoming / "sections.docx"
+    document.save(path)
+    resume_hash = resume_loader.hash_file(path)
+
+    main.run_ingest()
+
+    candidate = db.get_candidate(resume_hash, db_path)
+    expected_skills = ["scikit-learn", "Python", "SQL", "Docker", "Git", "Linux", "React"]
+    assert candidate.skills == expected_skills
+    assert candidate.education == "BSc Computer Science\nExample University"
+    assert candidate.status == CandidateStatus.NEEDS_REVIEW
+    assert candidate.extraction_notes.startswith(main.MOCK_MODE_NOTE)
+    assert (processed / path.name).exists()
+    workbook = openpyxl.load_workbook(output)
+    try:
+        headers, row = list(workbook.active.values)
+        assert row[headers.index("Skills")] == ", ".join(expected_skills)
+        assert row[headers.index("Education")] == candidate.education
+        assert row[headers.index("Status")] == "needs_review"
+    finally:
+        workbook.close()
+    client.assert_not_called()
+    extractor.assert_not_called()
+
+
 @pytest.mark.parametrize("failure", ["permission", "disappeared"])
 def test_unreadable_resume_does_not_stop_batch_or_export(
     offline_ingest, monkeypatch, caplog, failure
