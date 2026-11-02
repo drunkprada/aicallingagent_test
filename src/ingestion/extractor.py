@@ -18,7 +18,7 @@ EXTRACTION_PROMPT = (
 
 
 class ExtractionError(Exception):
-    """Raised when the model fails to produce a valid structured extraction."""
+    """Raised when extraction cannot produce valid structured candidate fields."""
 
 
 def extract_candidate(resume_text: str, client: openai.OpenAI) -> ResumeExtraction:

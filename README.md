@@ -86,6 +86,11 @@ Education, Experience, Work Experience, Professional Experience, Projects or
 Certifications. Sections are not limited to five lines, and hyphenated skills
 such as `scikit-learn` remain intact. Other layouts may still be misread; all
 mock results require manual review. Existing stored records are not re-extracted.
+Offline experience parsing keeps decimals such as `2.5 years` intact rather
+than extracting only the final digit; unsupported ranges and numeric formats
+are left unknown. Negative or non-finite values follow the same retryable
+`extraction_failed` path as invalid OpenAI output, allowing later resumes and
+the Excel export to finish. Successful mock extractions still need review.
 
 Extracted text fields are trimmed, blank values become missing fields, and
 empty skill entries are removed. Blank names or contact details therefore

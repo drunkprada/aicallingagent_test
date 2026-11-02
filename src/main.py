@@ -95,7 +95,7 @@ def run_ingest() -> None:
     if mock:
         logger.warning(
             "EXTRACTION_MODE=mock -- using free regex-based extraction, not OpenAI. "
-            "All candidates will be flagged needs_review."
+            "Successful extractions will be flagged needs_review."
         )
 
     files = list(scan_incoming())

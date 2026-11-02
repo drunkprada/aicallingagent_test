@@ -1,6 +1,7 @@
 import pytest
 
 from src.ingestion.mock_extractor import extract_candidate_mock
+from src.ingestion.extractor import ExtractionError
 
 SAMPLE_RESUME = """Jane Doe
 jane.doe@example.com
@@ -100,3 +101,27 @@ def test_empty_section_does_not_consume_the_next_heading():
     result = extract_candidate_mock("Skills\n\nProjects\nExample project\nEducation\n\nExperience\nEngineer")
     assert result.skills == []
     assert result.education is None
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("2.5 years of experience", 2.5),
+    ("0.5 yrs", 0.5),
+    (".5 years", 0.5),
+    ("0 years", 0.0),
+    ("5+ YEARS", 5.0),
+    ("+3 yrs", 3.0),
+    ("3-5 years", None),
+    ("3–5 years", None),
+    ("2,5 years", None),
+    ("1.2.5 years", None),
+    ("project5 years", None),
+])
+def test_mock_experience_uses_a_complete_number_without_guessing_ranges(text, expected):
+    result = extract_candidate_mock("Jane Doe\njane@example.com\n" + text)
+    assert result.years_experience == expected
+
+
+@pytest.mark.parametrize("text", ["-2 years", "-0.5 yrs", "9" * 400 + " years"])
+def test_invalid_mock_experience_uses_the_extraction_error_contract(text):
+    with pytest.raises(ExtractionError, match="invalid structured candidate fields"):
+        extract_candidate_mock("Jane Doe\njane@example.com\n" + text)

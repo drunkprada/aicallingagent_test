@@ -72,6 +72,50 @@ def _resume(incoming, name="resume.docx"):
     return path, resume_loader.hash_file(path)
 
 
+@pytest.mark.parametrize("invalid_years", ["-0.5", "9" * 400])
+def test_invalid_mock_experience_is_archived_without_stopping_the_batch(
+    offline_ingest, monkeypatch, invalid_years
+):
+    incoming, processed, failed, db_path, output, extractor, client = offline_ingest
+    monkeypatch.setattr(main, "EXTRACTION_MODE", "mock")
+    paths = []
+    for filename, years in [("a-invalid.docx", invalid_years), ("b-valid.docx", "2.5")]:
+        document = Document()
+        for line in ["Jane Doe", "jane@example.com", years + " years of experience"]:
+            document.add_paragraph(line)
+        path = incoming / filename
+        document.save(path)
+        paths.append((path, resume_loader.hash_file(path)))
+    (bad, bad_hash), (good, good_hash) = paths
+
+    main.run_ingest()
+
+    rejected = db.get_candidate(bad_hash, db_path)
+    assert rejected.status == CandidateStatus.EXTRACTION_FAILED
+    assert rejected.years_experience is None
+    assert rejected.extraction_notes.startswith("extraction error:")
+    assert (failed / bad.name).exists()
+    assert not bad.exists()
+    accepted = db.get_candidate(good_hash, db_path)
+    assert accepted.years_experience == 2.5
+    assert accepted.status == CandidateStatus.NEEDS_REVIEW
+    assert accepted.extraction_notes.startswith(main.MOCK_MODE_NOTE)
+    assert (processed / good.name).exists()
+    assert len(db.get_all_candidates(db_path)) == 2
+    workbook = openpyxl.load_workbook(output)
+    try:
+        headers, *rows = list(workbook.active.values)
+        by_file = {row[headers.index("Source File")]: row for row in rows}
+        assert by_file[bad.name][headers.index("Status")] == "extraction_failed"
+        assert by_file[bad.name][headers.index("Years Experience")] is None
+        assert by_file[good.name][headers.index("Status")] == "needs_review"
+        assert by_file[good.name][headers.index("Years Experience")] == 2.5
+    finally:
+        workbook.close()
+    client.assert_not_called()
+    extractor.assert_not_called()
+
+
 def test_failed_extraction_can_be_retried(offline_ingest):
     incoming, processed, failed, db_path, _, extractor, _ = offline_ingest
     path, resume_hash = _resume(incoming)

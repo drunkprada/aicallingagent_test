@@ -12,13 +12,21 @@ other code changes needed.
 import re
 from typing import List, Optional
 
+from pydantic import ValidationError
+
+from src.ingestion.extractor import ExtractionError
 from src.models.schema import ResumeExtraction
 
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 # Whitespace class excludes \n/\r deliberately -- a plain \s here lets the
 # match span across blank lines and swallow unrelated digits (e.g. "7 years").
 PHONE_RE = re.compile(r"(\+?\(?\d[\d\-\.\(\)\t ]{6,}\d)")
-YEARS_RE = re.compile(r"(\d+)\+?\s*(?:years|yrs)\b", re.IGNORECASE)
+# Match a whole signed number, rather than the trailing digits of a decimal,
+# range or identifier. Unsupported numeric formats remain unknown for review.
+YEARS_RE = re.compile(
+    r"(?<![\w.,+–—−-])([+-]?(?:\d+(?:\.\d+)?|\.\d+))\+?\s*(?:years|yrs)\b",
+    re.IGNORECASE,
+)
 SECTION_HEADER_RE = re.compile(
     r"\s*(?:skills|technical skills|core competencies|education|experience|"
     r"work experience|professional experience|projects|certifications)\s*:?\s*",
@@ -80,14 +88,19 @@ def extract_candidate_mock(resume_text: str) -> ResumeExtraction:
 
     education = _find_section(lines, "education")
 
-    return ResumeExtraction(
-        full_name=_guess_full_name(lines),
-        email=email_match.group(0) if email_match else None,
-        phone=phone_match.group(0).strip() if phone_match else None,
-        current_title=None,
-        years_experience=float(years_match.group(1)) if years_match else None,
-        skills=skills,
-        education=education,
-        location=None,
-        current_salary=None,
-    )
+    try:
+        return ResumeExtraction(
+            full_name=_guess_full_name(lines),
+            email=email_match.group(0) if email_match else None,
+            phone=phone_match.group(0).strip() if phone_match else None,
+            current_title=None,
+            years_experience=float(years_match.group(1)) if years_match else None,
+            skills=skills,
+            education=education,
+            location=None,
+            current_salary=None,
+        )
+    except ValidationError as exc:
+        # Use the same per-resume failure path as the structured API extractor,
+        # so invalid offline output cannot abort the batch or skip its export.
+        raise ExtractionError("Mock extraction produced invalid structured candidate fields") from exc
