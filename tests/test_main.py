@@ -10,6 +10,7 @@ from openai import OpenAI, OpenAIError
 from src import main
 from src.ingestion import resume_loader
 from src.ingestion.extractor import ExtractionError, extract_candidate
+from src.ingestion.parsers import ParserError
 from src.models.schema import Candidate, CandidateStatus, ResumeExtraction
 from src.storage import db, excel_export
 
@@ -70,6 +71,14 @@ def _resume(incoming, name="resume.docx"):
     path = incoming / name
     document.save(path)
     return path, resume_loader.hash_file(path)
+
+
+def _replace_resume(path, revision):
+    document = Document()
+    for line in ["Jane Doe", "jane@example.com", revision]:
+        document.add_paragraph(line)
+    document.save(path)
+    return resume_loader.hash_file(path)
 
 
 @pytest.mark.parametrize("invalid_years", ["-0.5", "9" * 400])
@@ -706,3 +715,185 @@ def test_invalid_sdk_fields_are_reviewed_or_failed_without_stopping_batch(
             workbook.close()
     finally:
         sdk_client.close()
+
+
+def test_resume_changed_during_parsing_is_not_extracted_under_its_old_hash(
+    offline_ingest, monkeypatch, caplog
+):
+    incoming, processed, failed, db_path, output, extractor, _ = offline_ingest
+    changing, original_hash = _resume(incoming, "a-changing.docx")
+    good, _ = _resume(incoming, "b-good.docx")
+    good_hash = _replace_resume(good, "Unaffected resume")
+    parse = main.extract_text
+
+    def parse_then_replace(path):
+        text = parse(path)
+        if path == changing:
+            _replace_resume(path, "Revised resume")
+        return text
+
+    monkeypatch.setattr(main, "extract_text", parse_then_replace)
+    extractor.return_value = ResumeExtraction(full_name="Jane Doe", email="jane@example.com")
+
+    main.run_ingest()
+
+    assert changing.exists(), "The revised resume must remain incoming for retry"
+    revised_hash = resume_loader.hash_file(changing)
+    assert revised_hash != original_hash
+    assert db.get_candidate(original_hash, db_path) is None
+    assert db.get_candidate(revised_hash, db_path) is None
+    assert db.get_candidate(good_hash, db_path).status == CandidateStatus.EXTRACTED
+    extractor.assert_called_once()
+    assert "Unaffected resume" in extractor.call_args.args[0]
+    assert not (processed / changing.name).exists()
+    assert not (failed / changing.name).exists()
+    assert "changed during ingestion" in caplog.text
+    assert output.exists()
+
+    monkeypatch.setattr(main, "extract_text", parse)
+    main.run_ingest()
+
+    assert not changing.exists()
+    assert resume_loader.hash_file(processed / changing.name) == revised_hash
+    assert db.get_candidate(revised_hash, db_path).status == CandidateStatus.EXTRACTED
+    assert db.get_candidate(original_hash, db_path) is None
+    assert len(db.get_all_candidates(db_path)) == 2
+    assert "Revised resume" in extractor.call_args.args[0]
+
+
+@pytest.mark.parametrize("outcome", ["success", "duplicate", "parse_failure", "extraction_failure"])
+def test_replaced_resume_is_not_archived_as_an_older_revision(
+    offline_ingest, monkeypatch, caplog, outcome
+):
+    incoming, processed, failed, db_path, output, extractor, _ = offline_ingest
+    changing, original_hash = _resume(incoming, "a-changing.docx")
+    good, _ = _resume(incoming, "b-good.docx")
+    good_hash = _replace_resume(good, "Unaffected resume")
+    extraction = ResumeExtraction(full_name="Jane Doe", email="jane@example.com")
+    parse = main.extract_text
+    get_candidate = main.get_candidate
+    db.init_db(db_path)
+    if outcome == "parse_failure":
+        changing.write_bytes(b"malformed DOCX")
+        original_hash = resume_loader.hash_file(changing)
+
+        def replace_after_parse_error(path):
+            try:
+                return parse(path)
+            except ParserError:
+                if path == changing:
+                    _replace_resume(path, "Revised resume")
+                raise
+
+        monkeypatch.setattr(main, "extract_text", replace_after_parse_error)
+    elif outcome == "duplicate":
+        db.upsert_candidate(Candidate(
+            resume_hash=original_hash, source_filename=changing.name,
+            full_name="Reviewed Name", call_attempts=2, salary_expectation="Reviewed answer",
+        ), db_path)
+
+        def replace_after_duplicate_check(resume_hash):
+            candidate = get_candidate(resume_hash)
+            if resume_hash == original_hash:
+                _replace_resume(changing, "Revised resume")
+            return candidate
+
+        monkeypatch.setattr(main, "get_candidate", replace_after_duplicate_check)
+    else:
+        def replace_during_extraction(text, client):
+            if "Unaffected resume" not in text:
+                _replace_resume(changing, "Revised resume")
+                if outcome == "extraction_failure":
+                    raise ExtractionError("offline rejection")
+            return extraction
+
+        extractor.side_effect = replace_during_extraction
+    extractor.return_value = extraction
+
+    main.run_ingest()
+
+    assert changing.exists(), "The revised resume must remain incoming for retry"
+    revised_hash = resume_loader.hash_file(changing)
+    assert revised_hash != original_hash
+    assert not (processed / changing.name).exists()
+    assert not (failed / changing.name).exists()
+    assert (processed / good.name).exists()
+    assert db.get_candidate(revised_hash, db_path) is None
+    assert db.get_candidate(good_hash, db_path).status == CandidateStatus.EXTRACTED
+    original = db.get_candidate(original_hash, db_path)
+    if outcome == "parse_failure":
+        assert original is None
+    else:
+        assert original.status == (
+            CandidateStatus.EXTRACTION_FAILED if outcome == "extraction_failure"
+            else CandidateStatus.EXTRACTED
+        )
+        if outcome == "duplicate":
+            assert original.full_name == "Reviewed Name"
+            assert original.call_attempts == 2
+            assert original.salary_expectation == "Reviewed answer"
+    assert "changed during ingestion" in caplog.text
+
+    monkeypatch.setattr(main, "extract_text", parse)
+    monkeypatch.setattr(main, "get_candidate", get_candidate)
+    extractor.side_effect = None
+    main.run_ingest()
+
+    assert not changing.exists()
+    assert resume_loader.hash_file(processed / changing.name) == revised_hash
+    assert db.get_candidate(revised_hash, db_path).status == CandidateStatus.EXTRACTED
+    assert db.get_candidate(original_hash, db_path) == original
+    workbook = openpyxl.load_workbook(output)
+    try:
+        headers, *rows = list(workbook.active.values)
+        assert len(rows) == (2 if original is None else 3)
+        assert sorted(row[headers.index("Status")] for row in rows) == sorted(
+            candidate.status.value for candidate in db.get_all_candidates(db_path)
+        )
+        assert sum(row[headers.index("Source File")] == changing.name for row in rows) == (
+            1 if original is None else 2
+        )
+    finally:
+        workbook.close()
+
+
+@pytest.mark.parametrize("failure", ["locked", "removed"])
+def test_resume_unreadable_after_parsing_is_skipped_before_extraction(
+    offline_ingest, monkeypatch, failure
+):
+    incoming, processed, failed, db_path, output, extractor, _ = offline_ingest
+    changing, original_hash = _resume(incoming, "a-changing.docx")
+    good, _ = _resume(incoming, "b-good.docx")
+    good_hash = _replace_resume(good, "Unaffected resume")
+    parse = main.extract_text
+    real_hash = main.hash_file
+    parsed = False
+
+    def parse_then_make_unreadable(path):
+        nonlocal parsed
+        text = parse(path)
+        if path == changing:
+            parsed = True
+            if failure == "removed":
+                path.unlink()
+        return text
+
+    def hash_unless_locked(path):
+        if path == changing and parsed and failure == "locked":
+            raise PermissionError("resume locked after parsing")
+        return real_hash(path)
+
+    monkeypatch.setattr(main, "extract_text", parse_then_make_unreadable)
+    monkeypatch.setattr(main, "hash_file", hash_unless_locked)
+    extractor.return_value = ResumeExtraction(full_name="Jane Doe", email="jane@example.com")
+
+    main.run_ingest()
+
+    assert db.get_candidate(original_hash, db_path) is None
+    assert db.get_candidate(good_hash, db_path).status == CandidateStatus.EXTRACTED
+    assert not (processed / changing.name).exists()
+    assert not (failed / changing.name).exists()
+    assert changing.exists() is (failure == "locked")
+    extractor.assert_called_once()
+    assert "Unaffected resume" in extractor.call_args.args[0]
+    assert output.exists()

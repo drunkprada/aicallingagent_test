@@ -65,8 +65,29 @@ def _can_retry_extraction(candidate: Candidate) -> bool:
     ).startswith(EXTRACTION_ERROR_PREFIX)
 
 
-def _archive_resume(path: Path, *, failed: bool = False) -> None:
+def _resume_is_unchanged(path: Path, resume_hash: str) -> bool:
+    """Do not extract or archive a replacement file under an earlier hash."""
+    try:
+        if hash_file(path) == resume_hash:
+            return True
+    except OSError as exc:
+        logger.error(
+            "Could not recheck resume %s: %s. Skipping further processing; "
+            "rerun ingest when the file is readable.", path.name, exc,
+        )
+        return False
+
+    logger.warning(
+        "Resume %s changed during ingestion; leaving the current file incoming "
+        "for the next run.", path.name,
+    )
+    return False
+
+
+def _archive_resume(path: Path, resume_hash: str, *, failed: bool = False) -> None:
     """An archive error must not discard stored results or stop the batch."""
+    if not _resume_is_unchanged(path, resume_hash):
+        return
     try:
         if failed:
             move_to_failed(path)
@@ -120,7 +141,7 @@ def run_ingest() -> None:
             existing = get_candidate(resume_hash)
             if existing and not _can_retry_extraction(existing):
                 logger.info("Skipping %s (already processed, hash matches an existing record)", path.name)
-                _archive_resume(path)
+                _archive_resume(path, resume_hash)
                 continue
 
             if existing:
@@ -130,7 +151,12 @@ def run_ingest() -> None:
                 text = extract_text(path)
             except ParserError as exc:
                 logger.error("Parse failed for %s: %s", path.name, exc)
-                _archive_resume(path, failed=True)
+                _archive_resume(path, resume_hash, failed=True)
+                continue
+
+            # Parsing opens the path separately from hashing. An editor or
+            # file copy may have replaced it between those reads.
+            if not _resume_is_unchanged(path, resume_hash):
                 continue
 
             try:
@@ -151,7 +177,7 @@ def run_ingest() -> None:
                     }
                 )
                 upsert_candidate(candidate)
-                _archive_resume(path, failed=True)
+                _archive_resume(path, resume_hash, failed=True)
                 continue
 
             candidate = _build_candidate(resume_hash, path.name, extraction, mock, existing)
@@ -159,7 +185,7 @@ def run_ingest() -> None:
             logger.info(
                 "Processed %s -> status=%s", path.name, candidate.status.value
             )
-            _archive_resume(path)
+            _archive_resume(path, resume_hash)
 
     output_path = export_candidates()
     logger.info("Excel export refreshed at %s", output_path)

@@ -79,6 +79,14 @@ the next run.
 Successfully extracted resumes are deduplicated by content hash, including
 records flagged `needs_review` for missing fields or mock extraction.
 
+Ingestion rechecks the content hash after parsing and before archiving any
+file, including duplicates and failures. If a resume changes during the run,
+the current file stays incoming for the next `ingest`; parsed text is not sent
+for extraction under an outdated hash. Results already stored for the earlier
+revision remain in SQLite and the export. If a recheck fails because the file
+is locked or has disappeared, the batch continues; restore access or put the
+resume back in the incoming folder before retrying.
+
 For free offline pipeline testing, set `EXTRACTION_MODE=mock`. Skills and
 education use standalone headings (optionally followed by a colon), ending at
 a blank line or a recognised heading: Skills, Technical Skills, Core Competencies,
