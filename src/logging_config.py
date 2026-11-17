@@ -1,15 +1,15 @@
 import logging
 from logging.handlers import RotatingFileHandler
 
-from src.config import LOGS_DIR, ensure_directories
+from src.config import LOGS_DIR
 
 
 def setup_logging() -> logging.Logger:
-    ensure_directories()
     logger = logging.getLogger("resume_agent")
     if logger.handlers:
         return logger
 
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
     logger.setLevel(logging.INFO)
     formatter = logging.Formatter(
         "%(asctime)s %(levelname)s %(name)s: %(message)s"

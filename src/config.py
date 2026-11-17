@@ -40,6 +40,5 @@ def ensure_directories() -> None:
         PROCESSED_DIR,
         FAILED_DIR,
         EXPORTS_DIR,
-        LOGS_DIR,
     ):
         directory.mkdir(parents=True, exist_ok=True)

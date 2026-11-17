@@ -1,5 +1,5 @@
 import argparse
-import sys
+import logging
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Optional
@@ -16,7 +16,7 @@ from src.models.schema import Candidate, CandidateStatus
 from src.storage.db import get_candidate, init_db, upsert_candidate
 from src.storage.excel_export import export_candidates
 
-logger = setup_logging()
+logger = logging.getLogger("resume_agent")
 
 REQUIRED_FIELDS = ("full_name",)
 CONTACT_FIELDS = ("email", "phone")
@@ -101,13 +101,16 @@ def _archive_resume(path: Path, resume_hash: str, *, failed: bool = False) -> No
         )
 
 
-def run_ingest() -> None:
+def _validate_extraction_mode() -> None:
     if EXTRACTION_MODE not in {"openai", "mock"}:
         raise ValueError(
             "Invalid EXTRACTION_MODE. Expected 'openai' or 'mock', "
             f"got {EXTRACTION_MODE!r}."
         )
 
+
+def run_ingest() -> None:
+    _validate_extraction_mode()
     ensure_directories()
     init_db()
 
@@ -207,12 +210,16 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "ingest":
+        try:
+            _validate_extraction_mode()
+        except ValueError as exc:
+            parser.error(str(exc))
+
+    setup_logging()
+    if args.command == "ingest":
         run_ingest()
-    elif args.command == "export":
-        run_export()
     else:
-        parser.print_help()
-        sys.exit(1)
+        run_export()
 
 
 if __name__ == "__main__":
